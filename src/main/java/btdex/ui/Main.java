@@ -12,8 +12,11 @@ import java.awt.Font;
 import java.awt.Image;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.security.SecureRandom;
+import java.util.Date;
 import java.util.Locale;
 import java.util.Properties;
 
@@ -35,18 +38,24 @@ import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 
-import btdex.core.*;
-import btdex.ui.orderbook.OrderBook;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import com.bulenkov.darcula.DarculaLaf;
 
 import bt.BT;
+import btdex.core.BurstNode;
+import btdex.core.Constants;
+import btdex.core.ContractState;
+import btdex.core.ContractType;
+import btdex.core.Contracts;
+import btdex.core.Globals;
+import btdex.core.NumberFormatting;
 import btdex.locale.Translation;
-import btdex.markets.MarketBTC;
-import btdex.markets.MarketBurstToken;
 import btdex.sc.SellContract;
+import btdex.ui.orderbook.MarketPanel;
+import btdex.ui.orderbook.TokenMarketPanel;
 import burst.kit.entity.response.Account;
-import burst.kit.entity.response.AssetBalance;
-import burst.kit.entity.response.AssetOrder;
 import burst.kit.entity.response.Block;
 import burst.kit.entity.response.http.BRSError;
 import io.github.novacrypto.bip39.MnemonicGenerator;
@@ -67,10 +76,10 @@ public class Main extends JFrame implements ActionListener {
 
 	private CardLayout cardLayout;
 	private boolean showingSplash;
-	private OrderBook orderBook;
+	private MarketPanel orderBook;
+	private TokenMarketPanel orderBookToken;
+	private MediationPanel mediationPanel;
 	private TransactionsPanel transactionsPanel;
-	private HistoryPanel historyPanel;
-	private AccountsPanel accountsPanel;
 
 	private JTabbedPane tabbedPane;
 	private JLabel statusLabel;
@@ -81,17 +90,7 @@ public class Main extends JFrame implements ActionListener {
 
 	private JLabel balanceLabel;
 	private JLabel lockedBalanceLabel;
-	private JComboBox<Market> marketComboBox;
-	private JButton removeTokenButton;
-	private Market addMarketDummy;
 	private JButton sendButton;
-	private Market token;
-
-	private Desc tokenDesc;
-
-	private JLabel balanceLabelToken;
-	private JLabel balanceLabelTokenPending;
-	private JButton sendButtonToken;
 
 	private long lastUpdated;
 
@@ -100,6 +99,8 @@ public class Main extends JFrame implements ActionListener {
 	private Icons i;
 
 	private JButton resetPinButton;
+
+	private Logger logger = LogManager.getLogger();
 
 	private static Main instance;
 
@@ -170,48 +171,27 @@ public class Main extends JFrame implements ActionListener {
 		bottomAll.add(bottomRight, BorderLayout.LINE_END);
 		bottomAll.add(bottom, BorderLayout.LINE_START);
 
-		marketComboBox = new JComboBox<Market>();
-		Font largeFont = marketComboBox.getFont().deriveFont(Font.BOLD, Constants.ICON_SIZE);
-		Color COLOR = marketComboBox.getForeground();
+		Font largeFont = bottomRight.getFont().deriveFont(Font.BOLD, Constants.ICON_SIZE);
+		Color COLOR = bottomRight.getForeground();
 		i = new Icons(COLOR, Constants.ICON_SIZE);
 
-		marketComboBox.setToolTipText(tr("main_select_market"));
-		marketComboBox.setFont(largeFont);
+		bottomRight.add(createWebButton());
+		bottomRight.add(createDiscordButton());
+		bottomRight.add(createRedditButton());
+		bottomRight.add(createGithubButton());
 
-		bottomRight.add(createWebButton(), BorderLayout.LINE_END);
-		bottomRight.add(createDiscordButton(), BorderLayout.LINE_END);
-		bottomRight.add(createGithubButton(), BorderLayout.LINE_END);
-
-		signoutButton = new JButton(i.get(Icons.SIGNOUT));
+		signoutButton = new JButton(i.get(Icons.RECYCLE));
 		signoutButton.setToolTipText(tr("main_exit_tip"));
 		signoutButton.setVerticalAlignment(SwingConstants.CENTER);
 		signoutButton.addActionListener(this);
 
 		bottomRight.add(createVersionButton());
 		bottomRight.add(createResetPinButton());
-		bottomRight.add(signoutButton);
 
-		for(Market m : Markets.getMarkets())
-			marketComboBox.addItem(m);
-		marketComboBox.addItem(addMarketDummy = new MarketBTC() {
-			@Override
-			public String toString() {
-				return tr("main_add_token_sign");
-			}
-		});
-		token = Markets.getToken();
-
-		marketComboBox.addActionListener(this);
-		orderBook = new OrderBook(this, (Market) marketComboBox.getSelectedItem());
-
-		removeTokenButton = new JButton(i.get(Icons.TRASH));
-		removeTokenButton.setToolTipText(tr("main_remove_token_tip"));
-		removeTokenButton.addActionListener(this);
-		removeTokenButton.setVisible(false);
+		orderBook = new MarketPanel(this);
+		orderBookToken = new TokenMarketPanel(this);
 
 		transactionsPanel = new TransactionsPanel();
-		historyPanel = new HistoryPanel(this, (Market) marketComboBox.getSelectedItem(), orderBook);
-		accountsPanel = new AccountsPanel(this);
 
 		ICON_CONNECTED = i.get(Icons.CONNECTED);
 		ICON_TESTNET = i.get(Icons.TESTNET);
@@ -224,26 +204,21 @@ public class Main extends JFrame implements ActionListener {
 		sendButton.setToolTipText(tr("main_send", "BURST"));
 		sendButton.addActionListener(this);
 
-		sendButtonToken = new JButton(i.get(Icons.SEND));
-		sendButtonToken.setToolTipText(tr("main_send", token.toString()));
-		sendButtonToken.addActionListener(this);
-
 		content.add(tabbedPane, BorderLayout.CENTER);
 		tabbedPane.setFont(largeFont);
 
-		tabbedPane.addTab(tr("main_order_book"), i.get(Icons.ORDER_BOOK), orderBook);
-		tabbedPane.addTab(tr("main_trade_history"), i.get(Icons.TRADE), historyPanel);
+		tabbedPane.addTab(tr("main_swaps"), i.get(Icons.SWAPS), orderBookToken);
+		tabbedPane.addTab(tr("main_contracts"), i.get(Icons.CROSS_CHAIN), orderBook);
 
-		if(g.isTestnet() && !g.usingLedger()) {
-			// FIXME: accounts on testnet only for now
-			tabbedPane.addTab(tr("main_accounts"), i.get(Icons.ACCOUNT), accountsPanel);
-			tabbedPane.addTab(tr("main_chat"), i.get(Icons.CHAT), new ChatPanel());
+		boolean isMediator = g.getAddress()!=null && g.getMediators().isMediator(g.getAddress().getSignedLongId());
+
+		if(isMediator){
+			// this is a mediator, add the mediation tab
+			tabbedPane.addTab(tr("main_mediation"), i.get(Icons.MEDIATION), mediationPanel = new MediationPanel(this));
 		}
 
 		tabbedPane.addTab(tr("main_transactions"), i.get(Icons.TRANSACTION), transactionsPanel);
-
-		top.add(new Desc(tr("main_market"), marketComboBox));
-		top.add(new Desc(" ", removeTokenButton));
+		
 		top.add(new Desc(tr("main_your_burst_address"), copyAddButton));
 
 		balanceLabel = new JLabel("0");
@@ -254,15 +229,9 @@ public class Main extends JFrame implements ActionListener {
 		top.add(new Desc(tr("main_balance", "BURST"), balanceLabel, lockedBalanceLabel));
 		top.add(new Desc("  ", sendButton));
 
-		balanceLabelToken = new JLabel("0");
-		balanceLabelToken.setToolTipText(tr("main_available_balance"));
-		balanceLabelToken.setFont(largeFont);
-		balanceLabelTokenPending = new JLabel("0");
-		balanceLabelTokenPending.setToolTipText(tr("main_amount_locked"));
-		top.add(tokenDesc = new Desc(tr("main_balance", token), balanceLabelToken, balanceLabelTokenPending));
-		top.add(new Desc("  ", sendButtonToken));
-
 		topRight.add(new Desc("  ", createSettingsButton(largeFont)));
+		topRight.add(new Desc("  ", resetPinButton));
+		topRight.add(new Desc("  ", signoutButton));
 		topRight.add(new Desc(tr("main_language_name"), createLangButton(largeFont, g)));
 
 		nodeSelector = new JButton(g.getNode());
@@ -289,16 +258,17 @@ public class Main extends JFrame implements ActionListener {
 		setVisible(true);
 
 		if(g.getAddress()==null) {
-			// no public key or invalid, show the welcome screen
+			logger.debug("no public key or invalid, show the welcome screen");
 			Welcome welcome = new Welcome(this);
 
 			welcome.setLocationRelativeTo(this);
 			welcome.setVisible(true);
 			if(welcome.getReturn() == 0) {
 				System.exit(0);
+				logger.debug("welcome.getReturn() == 0, system.exit");
 				return;
 			}
-			
+
 			resetPinButton.setVisible(!g.usingLedger());
 		}
 		copyAddButton.getMainButton().setText(g.getAddress().getRawAddress());
@@ -308,7 +278,8 @@ public class Main extends JFrame implements ActionListener {
 		setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
 		boolean newAccount = false;
 		try {
-			g.getNS().getAccount(g.getAddress()).blockingGet();
+			Account address = g.getNS().getAccount(g.getAddress()).blockingGet();
+			logger.info("Active address {}", address.getId().getFullAddress());
 		}
 		catch (Exception e) {
 			setCursor(Cursor.getDefaultCursor());
@@ -347,8 +318,6 @@ public class Main extends JFrame implements ActionListener {
 		}
 		setCursor(Cursor.getDefaultCursor());
 
-		marketComboBox.addActionListener(this);
-
 		if(!newAccount)
 			Toast.makeText(this, tr("main_getting_info_from_node"), 4000, Toast.Style.SUCCESS).display();
 		update();
@@ -360,6 +329,11 @@ public class Main extends JFrame implements ActionListener {
 			}
 		});
 		timer.start();
+		logger.info("updateUI timer started");
+	}
+
+	public void showTransactionsPanel() {
+		tabbedPane.setSelectedComponent(transactionsPanel);
 	}
 
 	public void browse(String url) {
@@ -367,6 +341,7 @@ public class Main extends JFrame implements ActionListener {
 			DesktopApi.browse(new URI(url));
 			Toast.makeText(Main.this, tr("main_opening_url", url.substring(0, Math.min(url.length(), 40)) + "..."), Toast.Style.SUCCESS).display();
 		} catch (Exception ex) {
+			logger.error(ex.getLocalizedMessage());
 			Toast.makeText(Main.this, ex.getMessage(), Toast.Style.ERROR).display();
 		}
 	}
@@ -380,7 +355,9 @@ public class Main extends JFrame implements ActionListener {
 			Properties versionProp = new Properties();
 			versionProp.load(Main.class.getResourceAsStream("/version.properties"));
 			version = versionProp.getProperty("version");
+			logger.info("Local resources, Version {}", version);
 		} catch (Exception ex) {
+			logger.error("Error in reading local resources :" + ex.getLocalizedMessage());
 			ex.printStackTrace();
 		}
 	}
@@ -392,7 +369,9 @@ public class Main extends JFrame implements ActionListener {
 		try {
 			DarculaLaf laf = new DarculaLaf();
 			UIManager.setLookAndFeel(laf);
+			logger.debug("UI manager {} created", laf.getDescription());
 		} catch (UnsupportedLookAndFeelException e) {
+			logger.error("Error: " + e.getLocalizedMessage());
 			e.printStackTrace();
 		}
 	}
@@ -404,6 +383,7 @@ public class Main extends JFrame implements ActionListener {
 		versionButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Version Button clicked");
 				browse(Constants.RELEASES_LINK);
 			}
 		});
@@ -417,6 +397,7 @@ public class Main extends JFrame implements ActionListener {
 		resetPinButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Reset Pin Button clicked");
 				Welcome welcome = new Welcome(Main.this, true);
 
 				welcome.setLocationRelativeTo(Main.this);
@@ -436,6 +417,7 @@ public class Main extends JFrame implements ActionListener {
 		webButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Web Button clicked");
 				browse(Constants.WEBSITE_LINK);
 			}
 		});
@@ -449,7 +431,22 @@ public class Main extends JFrame implements ActionListener {
 		discordButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Discord Button clicked");
 				browse(Constants.DISCORD_LINK);
+			}
+		});
+		return discordButton;
+	}
+
+	private JButton createRedditButton() {
+		JButton discordButton = new JButton(i.get(Icons.REDDIT));
+		discordButton.setToolTipText(tr("main_chat_reddit"));
+		discordButton.setVerticalAlignment(SwingConstants.CENTER);
+		discordButton.addActionListener(new ActionListener() {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				logger.debug("Reddit Button clicked");
+				browse(Constants.REDDIT_LINK);
 			}
 		});
 		return discordButton;
@@ -462,6 +459,7 @@ public class Main extends JFrame implements ActionListener {
 		githubButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Github Button clicked");
 				browse(Constants.GITHUB_LINK);
 			}
 		});
@@ -483,16 +481,19 @@ public class Main extends JFrame implements ActionListener {
 		langButton.addActionListener(new ActionListener() {
 			@Override
 			public void actionPerformed(ActionEvent e) {
+				logger.debug("Lang Button clicked");
 				JPopupMenu menu = new JPopupMenu();
 				for(Locale l : Translation.getSupportedLanguages()) {
 					JMenuItem item = new JMenuItem(l.getDisplayLanguage(Translation.getCurrentLocale()));
 					item.addActionListener(new ActionListener() {
 						@Override
 						public void actionPerformed(ActionEvent e) {
+							logger.debug("Language selected");
 							g.setLanguage(l.getLanguage());
 							try {
 								g.saveConfs();
 							} catch (Exception e1) {
+								logger.error("Error: {}", e1.getLocalizedMessage());
 								e1.printStackTrace();
 							}
 							JOptionPane.showMessageDialog(Main.this,
@@ -521,28 +522,39 @@ public class Main extends JFrame implements ActionListener {
 			return;
 		}
 		lastUpdated = System.currentTimeMillis();
-
+		logger.trace("Updating UI...");
 		long balance = 0, locked = 0;
 		try {
 			Globals g = Globals.getInstance();
+			logger.trace("Got globals instance, Node {}", g.getNode());
 			BurstNode bn = BurstNode.getInstance();
 
 			if(transactionsPanel.isVisible() || showingSplash)
 				transactionsPanel.update();
-			if(orderBook.isVisible() || historyPanel.isVisible() || showingSplash) {
+			if(orderBook.isVisible() || orderBookToken.isVisible() || showingSplash) {
 				orderBook.update();
-				historyPanel.update();
+				orderBookToken.update();
 			}
-			
+			if(mediationPanel!=null && mediationPanel.isVisible())
+				mediationPanel.update();
+
 			nodeSelector.setIcon(g.isTestnet() ? ICON_TESTNET : ICON_CONNECTED);
+			nodeSelector.setBackground(explorerSelector.getBackground());
 
 			Exception nodeException = bn.getNodeException();
 			if(nodeException != null) {
-
+				logger.warn("nodeException {}", nodeException.getLocalizedMessage());
 				if(!(nodeException.getCause() instanceof BRSError) || ((BRSError) nodeException.getCause()).getCode() != 5) {
 					// not the unknown account exception, show the error
 					nodeSelector.setIcon(ICON_DISCONNECTED);
 					String errorMessage = tr("main_error", nodeException.getLocalizedMessage());
+
+					if(nodeException.getCause() instanceof ConnectException ||
+							nodeException.getCause() instanceof SocketTimeoutException) {
+						errorMessage = tr("main_node_connection");
+						nodeSelector.setBackground(Color.RED);
+					}
+
 					statusLabel.setText(errorMessage);
 				}
 				// otherwise all fine, just move on
@@ -556,17 +568,28 @@ public class Main extends JFrame implements ActionListener {
 			}
 
 			// Check if the node has the expected block
-			if(g.isTestnet()) {
-				Block checkBlock = bn.getCheckBlock();
-				if(checkBlock == null)
-					return;
-				if(checkBlock.getHeight() != Constants.CHECK_HEIGHT_TESTNET) {
-					String error = tr("main_invalid_testnet_node", g.getNode());
-					Toast.makeText(Main.this, error, Toast.Style.ERROR).display();
+			Block checkBlock = bn.getCheckBlock();
+			if(checkBlock == null) {
+				logger.debug("checkBlock equals to Null");
+				return;
+			}
+			String checkBlockId = checkBlock.getId().getID();
+			if(!checkBlockId.equals(g.isTestnet() ? Constants.CHECK_BLOCK_TESTNET : Constants.CHECK_BLOCK)) {
+				logger.warn("Check block Id equals to {}, testnet {}, realnet {}", checkBlockId, Constants.CHECK_BLOCK_TESTNET, Constants.CHECK_BLOCK);
+				String error = tr("main_invalid_node", g.getNode());
+				Toast.makeText(Main.this, error, Toast.Style.ERROR).display();
 
-					nodeSelector.setIcon(ICON_DISCONNECTED);
-					statusLabel.setText(error);
+				nodeSelector.setIcon(ICON_DISCONNECTED);
+				nodeSelector.setBackground(Color.RED);
+				statusLabel.setText(error);
+
+				if(showingSplash) {
+					showingSplash = false;
+					pulsingButton.stopPulsing();
+					cardLayout.first(getContentPane());
+					logger.debug("Splash removed");
 				}
+				return;
 			}
 
 			Account ac = bn.getAccount();
@@ -589,43 +612,26 @@ public class Main extends JFrame implements ActionListener {
 				}
 				else if (s.getTaker() == g.getAddress().getSignedLongId()) {
 					if(s.getType() == ContractType.SELL)
-						locked += s.getAmountNQT();
+						locked += s.getSecurityNQT();
 					else if(s.getType() == ContractType.BUY)
-						locked += s.getSecurityNQT() + s.getSecurityNQT();
+						locked += s.getAmountNQT() + s.getSecurityNQT();
 				}
 			}
 
 			balanceLabel.setText(NumberFormatting.BURST.format(balance));
 			lockedBalanceLabel.setText(tr("main_plus_locked", NumberFormatting.BURST.format(locked)));
 
-			Market tokenMarket = token;
-			Market m = (Market) marketComboBox.getSelectedItem();
-			if(m.getTokenID()!=null && m!=token)
-				tokenMarket = m;
-			AssetBalance tokenBalanceAccount = bn.getAssetBalances(tokenMarket);
-
-			long tokenBalance = 0;
-			long tokenLocked = 0;
-			if (tokenBalanceAccount != null) {
-				tokenBalance += tokenBalanceAccount.getBalance().longValue();
-			}
-
-			AssetOrder[] asks = bn.getAssetAsks(tokenMarket);
-			if(asks == null)
-				return;
-			for(AssetOrder o : asks) {
-				if(!o.getAccountAddress().equals(g.getAddress()))
-					continue;
-				tokenLocked += o.getQuantity().longValue();
-			}
-			tokenBalance -= tokenLocked;
-
-			balanceLabelToken.setText(tokenMarket.format(tokenBalance));
-			balanceLabelTokenPending.setText(tr("main_plus_locked", tokenMarket.format(tokenLocked)));
-
 			// all fine status label with the latest block
 			statusLabel.setText("");
 			nodeSelector.setIcon(g.isTestnet() ? ICON_TESTNET : ICON_CONNECTED);
+			nodeSelector.setBackground(explorerSelector.getBackground());
+
+			// check if the latest block is too much in the past
+			Date back8Minutes = new Date(System.currentTimeMillis() - 8*60_000);
+			if(bn.getLatestBlock().getTimestamp().getAsDate().before(back8Minutes)) {
+				statusLabel.setText(tr("main_node_not_sync"));
+				nodeSelector.setBackground(Color.RED);
+			}
 		}
 		catch (RuntimeException rex) {
 			rex.printStackTrace();
@@ -638,15 +644,12 @@ public class Main extends JFrame implements ActionListener {
 			pulsingButton.stopPulsing();
 			cardLayout.first(getContentPane());
 
-			// TODO: remove this check when operational
-			if(Globals.getInstance().isTestnet())
-				Toast.makeText(this, tr("main_cross_chain_loading"), 8000, Toast.Style.SUCCESS).display();
+			Toast.makeText(this, tr("main_cross_chain_loading"), 8000, Toast.Style.SUCCESS).display();
 		}
 	}
 
 	@Override
 	public void actionPerformed(ActionEvent e) {
-		Market m = (Market) marketComboBox.getSelectedItem();
 
 		if(e.getSource() == signoutButton) {
 			Globals g = Globals.getInstance();
@@ -654,7 +657,8 @@ public class Main extends JFrame implements ActionListener {
 					tr(g.usingLedger() ? "main_exit_message_ledger" : "main_exit_message", g.getAddress().getRawAddress()),
 					tr("main_exit"), JOptionPane.OK_CANCEL_OPTION);
 			if(response != null) {
-				if(!response.equalsIgnoreCase(g.getAddress().getRawAddress().substring(0, 4))) {
+				String strAddress = g.getAddress().getRawAddress();
+				if(!response.equalsIgnoreCase(strAddress.substring(strAddress.length()-5))) {
 					Toast.makeText(this, tr("main_exit_error"), Toast.Style.ERROR).display();
 					return;
 				}
@@ -667,83 +671,8 @@ public class Main extends JFrame implements ActionListener {
 				}
 			}
 		}
-
-		if(e.getSource() == removeTokenButton) {
-			int response = JOptionPane.showConfirmDialog(this, tr("main_remove_token_message", m.toString()),
-					tr("main_remove_token"), JOptionPane.YES_NO_OPTION);
-			if(response == JOptionPane.YES_OPTION) {
-				marketComboBox.setSelectedIndex(0);
-
-				marketComboBox.removeItem(m);
-				Globals.getInstance().removeUserMarket(m, true);
-				BurstNode.getInstance().update();
-				return;
-			}
-		}
-
-		if (e.getSource() == marketComboBox) {
-			if(m == addMarketDummy) {
-				String response = JOptionPane.showInputDialog(this, tr("main_add_token_message"),
-						tr("main_add_token"), JOptionPane.OK_CANCEL_OPTION);
-				if(response != null) {
-					Market newMarket = new MarketBurstToken(response, Globals.getInstance().getNS());
-					if(newMarket.getFactor() != 0) {
-						// this is a valid market, add at the end of the list
-						marketComboBox.removeItem(addMarketDummy);
-						marketComboBox.addItem(newMarket);
-						marketComboBox.addItem(addMarketDummy);
-
-						Globals.getInstance().addUserMarket(newMarket, true);
-						BurstNode.getInstance().update();
-
-						marketComboBox.setSelectedItem(newMarket);
-						Toast.makeText(this, tr("main_add_token_success", response), Toast.Style.SUCCESS).display();
-						return;
-					}
-					else {
-						Toast.makeText(this, tr("main_add_token_invalid", response), Toast.Style.ERROR).display();
-					}
-				}
-
-				marketComboBox.setSelectedIndex(0);
-				return;
-			}
-
-			orderBook.setMarket(m);
-			historyPanel.setMarket(m);
-			// this is a custom token
-			removeTokenButton.setVisible(Markets.getUserMarkets().contains(m));
-
-			if(m.getTokenID() == null) {
-				// not a token market, show TRT in the token field
-				tokenDesc.setDesc(tr("main_balance", token));
-
-				if(!Globals.getInstance().isTestnet()) {
-					// FIXME: remove this when operational
-					Toast.makeText(this, tr("main_cross_chain_testnet_only"), Toast.Style.ERROR).display();
-				}
-				else if(Contracts.isLoading()) {
-					Toast.makeText(this, tr("main_cross_chain_loading"), 8000, Toast.Style.NORMAL).display();
-				}
-			}
-			else {
-				// this is a token market, show it on the token field
-				tokenDesc.setDesc(tr("main_balance", m));
-				balanceLabelToken.setText(m.format(0));
-				balanceLabelTokenPending.setText(" ");
-				sendButtonToken.setToolTipText(tr("main_send", m.toString()));
-			}
-
-			update();
-		}
 		else if (e.getSource() == sendButton) {
 			SendDialog dlg = new SendDialog(this, null);
-
-			dlg.setLocationRelativeTo(Main.this);
-			dlg.setVisible(true);
-		}
-		else if (e.getSource() == sendButtonToken) {
-			SendDialog dlg = new SendDialog(this, m.getTokenID()==null ? token : m);
 
 			dlg.setLocationRelativeTo(Main.this);
 			dlg.setVisible(true);
@@ -752,8 +681,7 @@ public class Main extends JFrame implements ActionListener {
 
 			Globals g = Globals.getInstance();
 
-			String[] list = {BT.NODE_BURSTCOIN_RO, BT.NODE_BURST_ALLIANCE,
-					BT.NODE_BURST_TEAM, Constants.NODE_LOCALHOST};
+			String[] list = {BT.NODE_BURST_ALLIANCE, BT.NODE_BURSTCOIN_RO, BT.NODE_BURST_TEAM, Constants.NODE_LOCALHOST};
 			if(g.isTestnet()){
 				list = new String[]{Constants.NODE_TESTNET2, BT.NODE_TESTNET, BT.NODE_TESTNET_MEGASH, BT.NODE_LOCAL_TESTNET };
 			}
@@ -780,7 +708,7 @@ public class Main extends JFrame implements ActionListener {
 			Globals g = Globals.getInstance();
 
 			JComboBox<ExplorerWrapper> explorerCombo = new JComboBox<ExplorerWrapper>();
-			explorerCombo.addItem(ExplorerWrapper.burstDevtrue());
+			explorerCombo.addItem(ExplorerWrapper.burstScanNet());
 			if(!g.isTestnet())
 				explorerCombo.addItem(ExplorerWrapper.burstcoinRo());
 			explorerCombo.addItem(ExplorerWrapper.burstcoinNetwork());

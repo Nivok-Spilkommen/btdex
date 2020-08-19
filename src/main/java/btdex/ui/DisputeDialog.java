@@ -3,6 +3,7 @@ package btdex.ui;
 import static btdex.locale.Translation.tr;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
@@ -53,8 +54,12 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 	JSlider security;
 	JSlider yourAmountYouSlider, yourAmountOtherSlider;
 	JSlider otherAmountYouSlider, otherAmountOtherSlider;
+	JSlider mediatorAmountMakerSlider, mediatorAmountTakerSlider;
 	Desc yourAmountYouDesc, yourAmountOtherDesc;
 	Desc otherAmountYouDesc, otherAmountOtherDesc;
+	Desc mediatorAmountMakerDesc, mediatorAmountTakerDesc;
+	JLabel amountToFeeContractLabel;
+	long amountToFeeContract;
 	long amount, amountToCreator, amountToTaker;
 	long suggestToYou, suggestToOther;
 
@@ -65,14 +70,15 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 	JTextPane conditions;
 	JCheckBox acceptBox;
 	JCheckBox acceptOtherTermsBox;
+	JCheckBox acceptMakerTermsBox;
 
 	JPasswordField pinField;
 
 	private JButton okButton;
 	private JButton cancelButton;
-	private JButton mediatorButton;
+	private JButton supportDiscord, supportReddit;
 
-	private boolean isBuy, isCreator;
+	private boolean isBuy, isCreator, isMediator, isMediating;
 	private boolean hasOtherSuggestion, hasYourSuggestion;
 
 	private BurstValue suggestedFee;
@@ -87,6 +93,14 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		this.contract = contract;
 		this.isBuy = contract.getType() == ContractType.BUY;
 		this.isCreator = contract.getCreator().equals(g.getAddress());
+		this.isMediator = g.getMediators().isMediator(g.getAddress().getSignedLongId());
+		this.isMediating = contract.getState() > SellContract.STATE_DISPUTE &&
+				(contract.getMediator1() == g.getAddress().getSignedLongId() ||
+				contract.getMediator2() == g.getAddress().getSignedLongId());
+		
+		if(this.isMediator)
+			this.isCreator = true; // so that "your" is the maker
+		
 		this.hasOtherSuggestion = (isCreator && contract.hasStateFlag(SellContract.STATE_TAKER_DISPUTE)) 
 				|| (!isCreator && contract.hasStateFlag(SellContract.STATE_CREATOR_DISPUTE));
 		this.hasYourSuggestion = (isCreator && contract.hasStateFlag(SellContract.STATE_CREATOR_DISPUTE)) 
@@ -109,7 +123,7 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 			suggestToOther = contract.getDisputeAmount(isCreator, !isCreator);
 		}
 
-		setTitle(tr("disp_title"));
+		setTitle(tr(isMediating ? "disp_title_mediate" : isMediator ? "disp_title_details" : "disp_title"));
 
 		this.market = market;
 
@@ -151,15 +165,19 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		conditions.setEditable(false);
 		
 		acceptBox = new JCheckBox(tr("dlg_accept_terms"));
-		acceptOtherTermsBox = new JCheckBox(tr("disp_accept_other_suggestion"));
+		acceptOtherTermsBox = new JCheckBox(tr(isMediator ? "disp_accept_taker_suggestion" : "disp_accept_other_suggestion"));
 		acceptOtherTermsBox.addActionListener(this);
+		if(isMediating) {
+			acceptMakerTermsBox = new JCheckBox(tr("disp_accept_maker_suggestion"));
+			acceptMakerTermsBox.addActionListener(this);
+		}
 
 		// Dispute panels
 		JPanel otherPanel = new JPanel(new GridLayout(0, 2));
-		otherPanel.setBorder(BorderFactory.createTitledBorder(tr("disp_what_other_suggested")));
-		otherPanel.add(new JLabel(tr("disp_you_should_get")));
+		otherPanel.setBorder(BorderFactory.createTitledBorder(tr(isMediator ? "disp_what_taker_suggested" : "disp_what_other_suggested")));
+		otherPanel.add(new JLabel(tr(isMediator ? "disp_maker_should_get" : "disp_you_should_get")));
 		otherPanel.add(otherAmountYouDesc = new Desc("", otherAmountYouSlider = new JSlider(0, 100)));
-		otherPanel.add(new JLabel(tr("disp_other_should_get")));
+		otherPanel.add(new JLabel(tr(isMediator ? "disp_taker_should_get" : "disp_other_should_get")));
 		otherPanel.add(otherAmountOtherDesc = new Desc("", otherAmountOtherSlider = new JSlider(0, 100)));
 		otherAmountOtherSlider.setValue((int)(contract.getDisputeAmount(!isCreator, !isCreator)*100 / amount));
 		otherAmountYouSlider.setValue((int)(contract.getDisputeAmount(!isCreator, isCreator)*100 / amount));
@@ -170,16 +188,48 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		otherAmountYouSlider.setEnabled(false);
 
 		JPanel yourPanel = new JPanel(new BorderLayout());
-		yourPanel.setBorder(BorderFactory.createTitledBorder(tr("disp_what_you_suggest")));
+		yourPanel.setBorder(BorderFactory.createTitledBorder(tr(isMediator ? "disp_what_maker_suggested" : "disp_what_you_suggest")));
 		JPanel yourSuggestionPanel = new JPanel(new GridLayout(0, 2));
 		yourPanel.add(yourSuggestionPanel, BorderLayout.CENTER);
-		if(hasOtherSuggestion) {
+		if(hasOtherSuggestion && !isMediator) {
 			yourPanel.add(acceptOtherTermsBox, BorderLayout.PAGE_START);
 		}
-		yourSuggestionPanel.add(new JLabel(tr("disp_you_should_get")));
+		yourSuggestionPanel.add(new JLabel(tr(isMediator ? "disp_maker_should_get" : "disp_you_should_get")));
 		yourSuggestionPanel.add(yourAmountYouDesc = new Desc("", yourAmountYouSlider = new JSlider(0, 100)));
-		yourSuggestionPanel.add(new JLabel(tr("disp_other_should_get")));
+		yourSuggestionPanel.add(new JLabel(tr(isMediator ? "disp_taker_should_get" : "disp_other_should_get")));
 		yourSuggestionPanel.add(yourAmountOtherDesc = new Desc("", yourAmountOtherSlider = new JSlider(0, 100)));
+		
+
+		JPanel mediatorPanel = new JPanel(new BorderLayout());
+		if(isMediating) {
+			mediatorPanel.setBorder(BorderFactory.createTitledBorder(tr("disp_mediator_decision")));
+			JPanel useSuggestionsPanel = new JPanel(new FlowLayout());
+			mediatorPanel.add(useSuggestionsPanel, BorderLayout.PAGE_START);
+			if(hasOtherSuggestion)
+				useSuggestionsPanel.add(acceptOtherTermsBox);
+			if(hasYourSuggestion)
+				useSuggestionsPanel.add(acceptMakerTermsBox);
+			
+			JPanel mediatorSuggestionPanel = new JPanel(new GridLayout(0, 2));
+			mediatorPanel.add(mediatorSuggestionPanel, BorderLayout.CENTER);
+			mediatorSuggestionPanel.add(new JLabel(tr("disp_maker_should_get")));
+			mediatorSuggestionPanel.add(mediatorAmountMakerDesc = new Desc("", mediatorAmountMakerSlider = new JSlider(0, 100)));
+			mediatorSuggestionPanel.add(new JLabel(tr("disp_taker_should_get")));
+			mediatorSuggestionPanel.add(mediatorAmountTakerDesc = new Desc("", mediatorAmountTakerSlider = new JSlider(0, 100)));
+			mediatorSuggestionPanel.add(new JLabel(tr("disp_amount_to_fee")));
+			mediatorSuggestionPanel.add(amountToFeeContractLabel = new JLabel());
+			
+			mediatorAmountMakerSlider.addChangeListener(this);
+			mediatorAmountTakerSlider.addChangeListener(this);
+			
+			mediatorAmountMakerSlider.setValue(0);
+			mediatorAmountTakerSlider.setValue(0);
+		}
+		
+		if(isMediator) {
+			yourAmountYouSlider.setEnabled(false);
+			yourAmountOtherSlider.setEnabled(false);
+		}
 		yourAmountYouSlider.addChangeListener(this);
 		yourAmountOtherSlider.addChangeListener(this);
 		
@@ -192,41 +242,65 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		pinField = new JPasswordField(12);
 		pinField.addActionListener(this);
 
-		mediatorButton = new JButton(tr("disp_contact_mediator"));
+		Icons i = new Icons(amountField.getForeground(), Constants.ICON_SIZE_MED);
+		supportDiscord = new JButton(tr("dlg_support"), i.get(Icons.DISCORD));
+		supportDiscord.setToolTipText(tr("dlg_support_discord"));
+		supportReddit = new JButton(tr("dlg_support"), i.get(Icons.REDDIT));
+		supportReddit.setToolTipText(tr("dlg_support_reddit"));
 		cancelButton = new JButton(tr("dlg_cancel"));
-		okButton = new JButton(tr("dlg_ok"));
+		okButton = new JButton(tr("disp_open_dispute"));
+		if(contract.getState() > SellContract.STATE_DISPUTE)
+			okButton.setText(tr("disp_update_dispute"));
+		if(isMediating)
+			okButton.setText(tr("disp_settle"));
+		
 		getRootPane().setDefaultButton(okButton);
 
+		supportDiscord.addActionListener(this);
+		supportReddit.addActionListener(this);
 		cancelButton.addActionListener(this);
 		okButton.addActionListener(this);
 
-		buttonPane.add(new Desc(" ", mediatorButton));
-		buttonPane.add(new Desc(tr("dlg_pin"), pinField));
+		if(!isMediator) {
+			buttonPane.add(new Desc(" ", supportDiscord));
+			buttonPane.add(new Desc(" ", supportReddit));
+		}
+		if(!isMediator || isMediating) {
+			buttonPane.add(new Desc(tr("dlg_pin"), pinField));
+			buttonPane.add(new Desc(" ", okButton));
+		}
 		buttonPane.add(new Desc(" ", cancelButton));
-		buttonPane.add(new Desc(" ", okButton));
 
 		JPanel content = (JPanel)getContentPane();
 		content.setBorder(new EmptyBorder(4, 4, 4, 4));
 
 		JPanel conditionsPanel = new JPanel(new BorderLayout());
-		conditionsPanel.setBorder(BorderFactory.createTitledBorder(tr("disp_terms")));
+		conditionsPanel.setBorder(BorderFactory.createTitledBorder(tr("dlg_terms_and_conditions") +
+				(isMediator ? " (YOU is the offer MAKER)" : "")));
 		JScrollPane scroll = new JScrollPane(conditions);
 		scroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
 		scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
 		scroll.setPreferredSize(conditions.getPreferredSize());
 		conditionsPanel.add(scroll, BorderLayout.CENTER);
 		
-		conditionsPanel.add(acceptBox, BorderLayout.PAGE_END);
+		if(!isMediator) {
+			conditionsPanel.add(acceptBox, BorderLayout.PAGE_END);
+		}
 
 		JPanel centerPanel = new JPanel(new BorderLayout());
 		centerPanel.add(fieldPanel, BorderLayout.PAGE_START);
 		centerPanel.add(conditionsPanel, BorderLayout.CENTER);
 
 		JPanel bottomPanel = new JPanel(new BorderLayout());
+		JPanel suggestionsPanel = new JPanel(new GridLayout(0, 1));
+		bottomPanel.add(suggestionsPanel, BorderLayout.PAGE_START);
 		// Only show the other side proposal when there is one
 		if(hasOtherSuggestion)
-			bottomPanel.add(otherPanel, BorderLayout.PAGE_START);
-		bottomPanel.add(yourPanel, BorderLayout.CENTER);
+			suggestionsPanel.add(otherPanel);
+		if(!isMediator || hasYourSuggestion)
+			suggestionsPanel.add(yourPanel);
+		if(isMediating)
+			suggestionsPanel.add(mediatorPanel);
 		bottomPanel.add(buttonPane, BorderLayout.PAGE_END);
 
 		content.add(centerPanel, BorderLayout.CENTER);
@@ -243,12 +317,12 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		if(b == true) {
 			if(Contracts.isLoading()) {
 				JOptionPane.showMessageDialog(getParent(), tr("main_cross_chain_loading"),
-						"Error", JOptionPane.ERROR_MESSAGE);
+						tr("offer_processing"), JOptionPane.ERROR_MESSAGE);
 				return;
 			}
 			if(contract.hasPending()) {
 				JOptionPane.showMessageDialog(getParent(), tr("offer_wait_confirm"),
-						"Error", JOptionPane.ERROR_MESSAGE);
+						tr("offer_processing"), JOptionPane.ERROR_MESSAGE);
 				return;
 			}
 		}
@@ -262,13 +336,41 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 			return;
 		}
 		
+	    if(e.getSource() == supportDiscord) {
+	    	Main.getInstance().browse(Constants.DISCORD_LINK);
+            return;
+        }
+	    if(e.getSource() == supportReddit) {
+	    	Main.getInstance().browse(Constants.REDDIT_LINK);
+            return;
+        }
+		
 		if(e.getSource() == acceptOtherTermsBox) {
+			if(isMediating) {
+				if(acceptOtherTermsBox.isSelected()) {
+					acceptMakerTermsBox.setSelected(false);
+					mediatorAmountMakerSlider.setValue(otherAmountYouSlider.getValue());
+					mediatorAmountTakerSlider.setValue(otherAmountOtherSlider.getValue());
+				}
+				mediatorAmountMakerSlider.setEnabled(!acceptOtherTermsBox.isSelected());
+				mediatorAmountTakerSlider.setEnabled(!acceptOtherTermsBox.isSelected());
+				return;
+			}
 			if(acceptOtherTermsBox.isSelected()) {
-				yourAmountOtherSlider.setValue(otherAmountOtherSlider.getValue());;
-				yourAmountYouSlider.setValue(otherAmountYouSlider.getValue());				
+				yourAmountOtherSlider.setValue(otherAmountOtherSlider.getValue());
+				yourAmountYouSlider.setValue(otherAmountYouSlider.getValue());
 			}
 			yourAmountOtherSlider.setEnabled(!acceptOtherTermsBox.isSelected());
 			yourAmountYouSlider.setEnabled(!acceptOtherTermsBox.isSelected());
+		}
+		if(e.getSource() == acceptMakerTermsBox) {
+			if(acceptMakerTermsBox.isSelected()) {
+				acceptOtherTermsBox.setSelected(false);
+				mediatorAmountMakerSlider.setValue(yourAmountYouSlider.getValue());
+				mediatorAmountTakerSlider.setValue(yourAmountOtherSlider.getValue());
+			}
+			mediatorAmountMakerSlider.setEnabled(!acceptMakerTermsBox.isSelected());
+			mediatorAmountTakerSlider.setEnabled(!acceptMakerTermsBox.isSelected());
 		}
 
 		if(e.getSource() == okButton || e.getSource() == pinField) {
@@ -285,10 +387,14 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 				//					error = tr("offer_no_changes");
 			}
 			
-			if(error == null && !acceptBox.isSelected()) {
+			if(error == null && !isMediator && !acceptBox.isSelected()) {
 				error = tr("dlg_accept_first");
 				errorComp = acceptBox;
 				acceptBox.requestFocus();
+			}
+
+			if(error == null && isMediating && amountToFeeContract < 0) {
+				error = tr("med_invalid_amounts");
 			}
 
 			if(error == null && !g.checkPIN(pinField.getPassword())) {
@@ -307,6 +413,11 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 
 				long amountToCreator = amount * (isCreator ? yourAmountYouSlider.getValue() : yourAmountOtherSlider.getValue()) / 100;
 				long amountToTaker = amount - amountToCreator;
+				
+				if(isMediating) {
+					amountToCreator = amount*mediatorAmountMakerSlider.getValue() / 100;
+					amountToTaker = amount*mediatorAmountTakerSlider.getValue() / 100;
+				}
 
 				// we are sending the dispute message with our amounts
 				byte[] message = BT.callMethodMessage(contract.getMethod("dispute"), amountToCreator, amountToTaker);
@@ -314,7 +425,7 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 
 				Single<byte[]> utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 						amountToSend, suggestedFee,
-						Constants.BURST_DEADLINE, message);
+						Constants.BURST_EXCHANGE_DEADLINE, message);
 
 				Single<TransactionBroadcast> tx = utx.flatMap(unsignedTransactionBytes -> {
 					byte[] signedTransactionBytes = g.signTransaction(pinField.getPassword(), unsignedTransactionBytes);
@@ -397,7 +508,8 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 				NumberFormatting.BURST.format(isCreator ? amountToTaker : amountToCreator)
 				));
 		append(tr("disp_dispute_terms", suggestedFee.add(BurstValue.fromPlanck(contract.getActivationFee())).toUnformattedString()));
-		append(tr("disp_mediating", suggestedFee.add(BurstValue.fromPlanck(contract.getActivationFee())).toUnformattedString()));
+		if(!isMediator)
+			append(tr("disp_mediating", suggestedFee.add(BurstValue.fromPlanck(contract.getActivationFee())).toUnformattedString()));
 
 		// checking it has the balance before requesting the deposit
 		if(unexpectedState) {
@@ -430,6 +542,18 @@ public class DisputeDialog extends JDialog implements ActionListener, ChangeList
 		if(e.getSource() == yourAmountOtherSlider) {
 			yourAmountOtherDesc.setDesc(NumberFormatting.BURST.format(amount*yourAmountOtherSlider.getValue() / 100) + " BURST");
 			yourAmountYouSlider.setValue(100-yourAmountOtherSlider.getValue());
+		}
+		if(e.getSource() == mediatorAmountMakerSlider) {
+			mediatorAmountMakerDesc.setDesc(NumberFormatting.BURST.format(amount*mediatorAmountMakerSlider.getValue() / 100) + " BURST");
+		}
+		if(e.getSource() == mediatorAmountTakerSlider) {
+			mediatorAmountTakerDesc.setDesc(NumberFormatting.BURST.format(amount*mediatorAmountTakerSlider.getValue() / 100) + " BURST");
+		}
+		if(e.getSource() == mediatorAmountMakerSlider || e.getSource() == mediatorAmountTakerSlider) {
+			int amountToSides = mediatorAmountMakerSlider.getValue() + mediatorAmountTakerSlider.getValue();
+			amountToFeeContract = (100-amountToSides)*amount / 100;
+			amountToFeeContractLabel.setText(NumberFormatting.BURST.format(amountToFeeContract) + " BURST");
+			amountToFeeContractLabel.setForeground(amountToSides > 100 ? Color.RED : mediatorAmountTakerSlider.getForeground());
 		}
 	}
 }

@@ -38,10 +38,10 @@ import btdex.core.*;
 import com.google.gson.JsonObject;
 
 import bt.BT;
-import bt.Contract;
 import btdex.markets.MarketCrypto;
 import btdex.sc.SellContract;
 import burst.kit.entity.BurstValue;
+import burst.kit.entity.response.Account;
 import burst.kit.entity.response.TransactionBroadcast;
 import io.reactivex.Single;
 
@@ -70,7 +70,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 	private JButton cancelButton;
 	private JButton disputeButton;
 
-	private boolean isUpdate, isTake, isTaken, isBuy, isSignal, isDeposit;
+	private boolean isUpdate, isTake, isTaken, isBuy, isSignal, isDeposit, isMediator;
 
 	private BurstValue suggestedFee;
 
@@ -79,6 +79,8 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 	private Desc pinDesc;
 
 	private StringBuilder terms;
+
+	private JPanel buttonPane;
 
 	public PlaceOrderDialog(JFrame owner, Market market, ContractState contract, boolean buy) {
 		super(owner, ModalityType.APPLICATION_MODAL);
@@ -108,6 +110,8 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 
 		if(isTaken)
 			setTitle(tr(isDeposit ? "offer_deposit" : "offer_signal_was_received", market));
+		else if(contract != null && contract.getCreator().equals(g.getAddress()))
+			setTitle(tr("offer_update"));
 
 		this.market = market;
 
@@ -195,7 +199,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 			acceptBox.setText(tr("offer_received_coin", market));
 
 		// Create a button
-		JPanel buttonPane = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+		buttonPane = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 
 		pinField = new JPasswordField(12);
 		pinField.addActionListener(this);
@@ -212,8 +216,8 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 
 		buttonPane.add(new Desc(" ", disputeButton));
 		buttonPane.add(pinDesc = new Desc(tr("dlg_pin"), pinField));
-		buttonPane.add(new Desc(" ", cancelButton));
 		buttonPane.add(new Desc(" ", okButton));
+		buttonPane.add(new Desc(" ", cancelButton));
 
 		// set action listener on the button
 
@@ -221,7 +225,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 		content.setBorder(new EmptyBorder(4, 4, 4, 4));
 
 		// We need the top panel
-		if(!isSignal && ( (!isTake && !isBuy) || (isTake && isBuy)))
+		if(!isSignal && !isTaken && ( (!isTake && !isBuy) || (isTake && isBuy)))
 			content.add(accountPanel, BorderLayout.PAGE_START);
 
 		JPanel conditionsPanel = new JPanel(new BorderLayout());
@@ -264,32 +268,40 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 	@Override
 	public void setVisible(boolean b) {
 		if(b == true) {
-			if(!Globals.getInstance().isTestnet()) {
-				JOptionPane.showMessageDialog(getParent(), tr("offer_not_open_yet"),
-						tr("dlg_error"), JOptionPane.ERROR_MESSAGE);
-				return;
-			}
-			if(Globals.getInstance().usingLedger()) {
+			Globals g = Globals.getInstance();
+			
+			isMediator = g.getMediators().isMediator(g.getAddress().getSignedLongId());
+			
+			if(g.usingLedger()) {
 				JOptionPane.showMessageDialog(getParent(), tr("ledger_no_offer"),
 						tr("dlg_error"), JOptionPane.ERROR_MESSAGE);
 				return;
 			}
 			if(Contracts.isLoading()) {
 				JOptionPane.showMessageDialog(getParent(), tr("main_cross_chain_loading"),
-						tr("dlg_error"), JOptionPane.ERROR_MESSAGE);
+						tr("offer_processing"), JOptionPane.ERROR_MESSAGE);
 				return;
 			}
-			if(accountComboBox.getItemCount()==0 && (isBuy && isTake || !isBuy && !isTake)) {
+			if(Contracts.isRegistering()) {
+				JOptionPane.showMessageDialog(getParent(), tr("offer_wait_confirm"),
+						tr("offer_processing"), JOptionPane.ERROR_MESSAGE);
+				return;
+			}
+			if(!isMediator && accountComboBox.getItemCount()==0 && (isBuy && isTake && !isTaken || !isBuy && !isTake)) {
 				JOptionPane.showMessageDialog(getParent(), tr("offer_register_account_first", market),
 						tr("dlg_error"), JOptionPane.ERROR_MESSAGE);
 				return;
+			}
+			if(isMediator) {
+				buttonPane.setVisible(false);
 			}
 			if(contract!=null && contract.hasPending()) {
 				JOptionPane.showMessageDialog(getParent(), tr("offer_wait_confirm"),
 						tr("dlg_error"), JOptionPane.ERROR_MESSAGE);
 				return;
 			}
-			if(contract!=null && contract.getState() > SellContract.STATE_DISPUTE) {
+			if(contract!=null && (contract.getState() > SellContract.STATE_DISPUTE ||
+					contract.getState() > SellContract.STATE_OPEN && isMediator) ) {
 				DisputeDialog dispute = new DisputeDialog(this.getOwner(), market, contract);
 				dispute.setLocationRelativeTo(this);
 				dispute.setVisible(true);
@@ -297,21 +309,21 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 				return;
 			}
 			
-			if(Globals.getInstance().isTestnet())
+			if(g.isTestnet())
 				Toast.makeText((JFrame) this.getOwner(), tr("offer_testnet_warning"), Toast.Style.NORMAL).display();
 
 			if(contract == null)
 				contract = isBuy ? Contracts.getFreeBuyContract() : Contracts.getFreeContract();
 			if(contract == null) {
 				int ret = JOptionPane.showConfirmDialog(getParent(),
-						tr("offer_no_contract_available"),
+						tr("offer_no_contract_available", tr(isBuy ? "book_buy_button" : "book_sell_button", Constants.BURST_TICKER)),
 						tr("reg_register"), JOptionPane.YES_NO_OPTION);
 				if(ret == JOptionPane.YES_OPTION) {
 					// No available contract, show the option to register a contract first
 					RegisterContractDialog dlg = new RegisterContractDialog(getOwner(), isBuy);
 					dlg.setLocationRelativeTo(getOwner());
 					dlg.setVisible(true);
-				}			
+				}
 				return;
 			}
 		}
@@ -357,11 +369,17 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 			if(error == null && (priceValue == null || priceValue.longValue() <= 0)) {
 				error = tr("offer_invalid_price");
 			}
+			if(error == null && isMediator) {
+				error = tr("offer_mediator_take");
+			}
 			if(error == null && (amountValue == null || amountValue.longValue() <= 0)) {
 				error = tr("send_invalid_amount");
 			}
-			if(error == null && amountValue.longValue() <= 10 * Contract.ONE_BURST) {
-				error = tr("offer_too_small");
+			if(error == null && amountValue.longValue() < Constants.MIN_OFFER) {
+				error = tr("offer_too_small", NumberFormatting.BURST.format(Constants.MIN_OFFER));
+			}
+			if(error == null && amountValue.longValue() > Constants.MAX_OFFER) {
+				error = tr("offer_too_large", NumberFormatting.BURST.format(Constants.MAX_OFFER));
 			}
 
 			if(error == null && !acceptBox.isSelected()) {
@@ -391,6 +409,13 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 			// all set, lets place the order
 			try {
 				setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+				
+				Account ac = BurstNode.getInstance().getAccount();
+				if(ac == null) {
+					Toast.makeText((JFrame) this.getOwner(), tr("dlg_not_enough_balance"), Toast.Style.ERROR).display(okButton);
+					return;
+				}
+				BurstValue balance = ac.getUnconfirmedBalance();
 
 				Single<byte[]> utx = null;
 				Single<TransactionBroadcast> updateTx = null;
@@ -413,10 +438,19 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 					BurstValue amountToSend = BurstValue.fromPlanck(securityAmount + contract.getNewOfferFee());
 					if(!isBuy)
 						amountToSend = amountToSend.add(amountValue);
+					
+					// Checking if we will have balance for all transactions needed
+					BurstValue balanceNeeded = amountToSend.add(suggestedFee.multiply(2))
+							.add(BurstValue.fromPlanck(Constants.FEE_QUANT));
+					if(balance.compareTo(balanceNeeded) < 0) {
+						Toast.makeText((JFrame) this.getOwner(), tr("dlg_not_enough_balance"), Toast.Style.ERROR).display(okButton);
+						setCursor(Cursor.getDefaultCursor());
+						return;
+					}
 
 					utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 							amountToSend, suggestedFee,
-							Constants.BURST_DEADLINE, message);
+							Constants.BURST_EXCHANGE_DEADLINE, message);
 
 					updateTx = utx.flatMap(unsignedTransactionBytes -> {
 						byte[] signedTransactionBytes = g.signTransaction(pinField.getPassword(), unsignedTransactionBytes);
@@ -434,13 +468,22 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 
 					utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 							amountToSend, suggestedFee,
-							Constants.BURST_DEADLINE, message);						
+							Constants.BURST_EXCHANGE_DEADLINE, message);						
 				}
 				else if(isTake) {
 					// send the take transaction with the security deposit (+ amount if a buy order)
 					BurstValue amountToSend = BurstValue.fromPlanck(contract.getSecurityNQT() + contract.getActivationFee());
 					if(isBuy) {
 						amountToSend = amountToSend.add(BurstValue.fromPlanck(contract.getAmountNQT()));
+						
+						// Checking if we will have balance for all transactions needed
+						BurstValue balanceNeeded = amountToSend.add(configureFee.multiply(2))
+								.add(BurstValue.fromPlanck(Constants.FEE_QUANT));
+						if(balance.compareTo(balanceNeeded) < 0) {
+							Toast.makeText((JFrame) this.getOwner(), tr("dlg_not_enough_balance"), Toast.Style.ERROR).display(okButton);
+							setCursor(Cursor.getDefaultCursor());
+							return;
+						}
 						
 						// also send the address we want to receive the amount
 						JsonObject messageJson = new JsonObject();
@@ -449,7 +492,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 						String messageString = Constants.GSON.toJson(messageJson);
 						utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 								configureFee,
-								Constants.BURST_DEADLINE, messageString);
+								Constants.BURST_EXCHANGE_DEADLINE, messageString);
 						
 						utx.flatMap(unsignedTransactionBytes -> {
 							byte[] signedTransactionBytes = g.signTransaction(pinField.getPassword(), unsignedTransactionBytes);
@@ -464,7 +507,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 
 					utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 							amountToSend, configureFee,
-							Constants.BURST_DEADLINE, message);
+							Constants.BURST_EXCHANGE_DEADLINE, message);
 				}
 				else {
 					// now the configuration message
@@ -477,7 +520,7 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 					String messageString = Constants.GSON.toJson(messageJson);
 					utx = g.getNS().generateTransactionWithMessage(contract.getAddress(), g.getPubKey(),
 							configureFee,
-							Constants.BURST_DEADLINE, messageString);
+							Constants.BURST_EXCHANGE_DEADLINE, messageString);
 				}					
 
 				Single<TransactionBroadcast> tx = utx.flatMap(unsignedTransactionBytes -> {
@@ -530,14 +573,16 @@ public class PlaceOrderDialog extends JDialog implements ActionListener, Documen
 		
 		if(account != null && account.getFields().get(MarketCrypto.ADDRESS) != null)
 			addressButton.setURI(account.getFields().get(MarketCrypto.ADDRESS));
+		if(contract != null && isTaken && contract.getMarketAccount() != null)
+			addressButton.setURI(contract.getMarketAccount());
 
 		try {
 			// Price is on the selected market
 			Number priceN = NumberFormatting.parse(priceField.getText());
 			Number amountN = NumberFormatting.parse(amountField.getText());
 
-			priceValue = BurstValue.fromPlanck((long)(priceN.doubleValue()*market.getFactor()));
-			amountValue = BurstValue.fromPlanck((long)(amountN.doubleValue()*Market.BURST_TO_PLANCK));
+			priceValue = BurstValue.fromBurst(priceN.doubleValue());
+			amountValue = BurstValue.fromBurst(amountN.doubleValue());
 
 			double totalValue = priceN.doubleValue()*amountN.doubleValue()*market.getFactor();
 			totalField.setText(market.format(Math.round(totalValue)));

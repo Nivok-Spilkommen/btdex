@@ -86,7 +86,7 @@ public class AccountsPanel extends JPanel implements ActionListener, ListSelecti
 			table.getColumnModel().getColumn(i).setHeaderValue(tr(COLUMN_NAMES[i]));
 		}
 		table.setRowHeight(table.getRowHeight()+7);
-		table.setPreferredScrollableViewportSize(new Dimension(400, 200));
+		table.setPreferredScrollableViewportSize(new Dimension(600, 200));
 		table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 		table.getSelectionModel().addListSelectionListener(this);
 
@@ -211,7 +211,7 @@ public class AccountsPanel extends JPanel implements ActionListener, ListSelecti
 				market.validate(fields);
 			}
 			catch (Exception ex) {
-				Toast.makeText(main, ex.getMessage(), Toast.Style.ERROR).display(okButton);
+				Toast.makeText(main, ex.getMessage(), Toast.Style.ERROR).display();
 				return;
 			}
 
@@ -265,6 +265,7 @@ public class AccountsPanel extends JPanel implements ActionListener, ListSelecti
 		}			
 		SpringUtilities.makeCompactGrid(formPanel, fields.size(), 2, 0, 0, PAD, PAD);
 		validate();
+		formPanel.repaint();
 	}
 
 	@Override

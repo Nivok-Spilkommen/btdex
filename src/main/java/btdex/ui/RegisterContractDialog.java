@@ -85,8 +85,8 @@ public class RegisterContractDialog extends JDialog implements ActionListener, C
 		okButton.addActionListener(this);
 
 		buttonPane.add(new Desc(tr("dlg_pin"), pin));
-		buttonPane.add(new Desc(" ", cancelButton));
 		buttonPane.add(new Desc(" ", okButton));
+		buttonPane.add(new Desc(" ", cancelButton));
 
 		JPanel content = (JPanel)getContentPane();
 		content.setBorder(new EmptyBorder(4, 4, 4, 4));
@@ -145,7 +145,7 @@ public class RegisterContractDialog extends JDialog implements ActionListener, C
 				int ncontracts = Integer.parseInt(numOfContractsSpinner.getValue().toString());
 
 				for (int c = 0; c < ncontracts; c++) {
-					long data[] = Contracts.getNewContractData(g.isTestnet());
+					long data[] = Contracts.getNewContractData();
 
 					ByteBuffer dataBuffer = ByteBuffer.allocate(data==null ? 0 : data.length*8);
 					dataBuffer.order(ByteOrder.LITTLE_ENDIAN);
@@ -159,7 +159,7 @@ public class RegisterContractDialog extends JDialog implements ActionListener, C
 
 					Single<TransactionBroadcast> tx = g.getNS().generateCreateATTransaction(g.getPubKey(),
 							BT.getMinRegisteringFee(contract),
-							Constants.BURST_DEADLINE, "BTDEX", "BTDEX sell contract " + System.currentTimeMillis(), creationBytes)
+							Constants.BURST_EXCHANGE_DEADLINE, "BTDEX" + (isBuy ? "buy" : "sell"), "BTDEX contract " + System.currentTimeMillis(), creationBytes)
 							.flatMap(unsignedTransactionBytes -> {
 								byte[] signedTransactionBytes = g.signTransaction(pin.getPassword(), unsignedTransactionBytes);
 								return g.getNS().broadcastTransaction(signedTransactionBytes);
@@ -168,6 +168,7 @@ public class RegisterContractDialog extends JDialog implements ActionListener, C
 					TransactionBroadcast tb = tx.blockingGet();
 					tb.getTransactionId();
 					setVisible(false);
+					// Main.getInstance().showTransactionsPanel();
 
 					Toast.makeText((JFrame) this.getOwner(),
 							tr("send_tx_broadcast", tb.getTransactionId().toString()), Toast.Style.SUCCESS).display();	
